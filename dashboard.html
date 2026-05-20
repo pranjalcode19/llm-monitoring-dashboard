@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>LLM Monitoring Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: monospace; background: #0d1117; color: #c9d1d9; padding: 24px; }
+        h1 { color: #58a6ff; margin-bottom: 24px; font-size: 20px; }
+        .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 32px; }
+        .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; }
+        .card .label { font-size: 11px; color: #8b949e; text-transform: uppercase; margin-bottom: 8px; }
+        .card .value { font-size: 28px; font-weight: bold; color: #58a6ff; }
+        .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 32px; }
+        .chart-box { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; }
+        .chart-box h3 { font-size: 13px; color: #8b949e; margin-bottom: 16px; }
+        table { width: 100%; border-collapse: collapse; background: #161b22; border: 1px solid #30363d; border-radius: 8px; overflow: hidden; }
+        th { background: #21262d; padding: 10px 16px; text-align: left; font-size: 11px; color: #8b949e; text-transform: uppercase; }
+        td { padding: 10px 16px; border-top: 1px solid #30363d; font-size: 12px; }
+        .success { color: #3fb950; }
+        .error { color: #f85149; }
+        .ask-box { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; margin-bottom: 24px; display: flex; gap: 12px; }
+        input { flex: 1; padding: 10px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9; font-family: monospace; font-size: 13px; }
+        button { padding: 10px 20px; background: #238636; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-family: monospace; }
+        button:hover { background: #2ea043; }
+        #response { margin-top: 12px; font-size: 12px; color: #8b949e; min-height: 20px; }
+    </style>
+</head>
+<body>
+    <h1>LLM Monitoring Dashboard</h1>
+
+    <div class="ask-box">
+        <input id="q" type="text" placeholder="Ask the LLM..." />
+        <button onclick="ask()">Send</button>
+        <button onclick="refresh()" style="background:#1f6feb">Refresh</button>
+    </div>
+    <div id="response"></div>
+
+    <div class="cards">
+        <div class="card"><div class="label">Total Requests</div><div class="value" id="total">-</div></div>
+        <div class="card"><div class="label">Avg Latency</div><div class="value" id="latency">-</div></div>
+        <div class="card"><div class="label">Success Rate</div><div class="value" id="success">-</div></div>
+        <div class="card"><div class="label">Errors</div><div class="value" id="errors" style="color:#f85149">-</div></div>
+    </div>
+
+    <div class="charts">
+        <div class="chart-box"><h3>Latency Over Time (ms)</h3><canvas id="latencyChart"></canvas></div>
+        <div class="chart-box"><h3>Request Status</h3><canvas id="statusChart"></canvas></div>
+    </div>
+
+    <table>
+        <thead><tr><th>Time</th><th>Question</th><th>Latency</th><th>Status</th></tr></thead>
+        <tbody id="table"></tbody>
+    </table>
+
+    <script>
+        let latencyChart, statusChart;
+
+        async function ask() {
+            const q = document.getElementById("q").value.trim();
+            if (!q) return;
+            document.getElementById("response").textContent = "Thinking...";
+            const res = await fetch("/ask", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({question: q})
+            });
+            const data = await res.json();
+            document.getElementById("response").textContent = `[${data.latency_ms}ms] ${data.answer}`;
+            document.getElementById("q").value = "";
+            refresh();
+        }
+
+        async function refresh() {
+            const res = await fetch("/metrics/summary");
+            const data = await res.json();
+
+            document.getElementById("total").textContent = data.total_requests;
+            document.getElementById("latency").textContent = data.avg_latency_ms + "ms";
+            document.getElementById("success").textContent = data.success_rate;
+            document.getElementById("errors").textContent = data.error_count;
+
+            const recent = data.recent.reverse();
+            const labels = recent.map(r => r.timestamp.slice(11, 19));
+            const latencies = recent.map(r => r.latency_ms);
+            const successes = data.total_requests - data.error_count;
+
+            if (latencyChart) latencyChart.destroy();
+            latencyChart = new Chart(document.getElementById("latencyChart"), {
+                type: "line",
+                data: {
+                    labels,
+                    datasets: [{label: "Latency (ms)", data: latencies, borderColor: "#58a6ff", backgroundColor: "rgba(88,166,255,0.1)", tension: 0.3, fill: true}]
+                },
+                options: {plugins: {legend: {labels: {color: "#8b949e"}}}, scales: {x: {ticks: {color: "#8b949e"}}, y: {ticks: {color: "#8b949e"}}}}
+            });
+
+            if (statusChart) statusChart.destroy();
+            statusChart = new Chart(document.getElementById("statusChart"), {
+                type: "doughnut",
+                data: {
+                    labels: ["Success", "Error"],
+                    datasets: [{data: [successes, data.error_count], backgroundColor: ["#3fb950", "#f85149"]}]
+                },
+                options: {plugins: {legend: {labels: {color: "#8b949e"}}}}
+            });
+
+            const tbody = document.getElementById("table");
+            tbody.innerHTML = data.recent.reverse().map(r => `
+                <tr>
+                    <td>${r.timestamp.slice(11, 19)}</td>
+                    <td>${r.question.slice(0, 60)}${r.question.length > 60 ? "..." : ""}</td>
+                    <td>${r.latency_ms}ms</td>
+                    <td class="${r.status}">${r.status}</td>
+                </tr>
+            `).join("");
+        }
+
+        document.getElementById("q").addEventListener("keydown", e => { if (e.key === "Enter") ask(); });
+        refresh();
+        setInterval(refresh, 10000);
+    </script>
+</body>
+</html>
