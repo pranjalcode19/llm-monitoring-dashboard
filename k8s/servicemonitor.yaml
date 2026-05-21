@@ -1,0 +1,16 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: llm-monitoring-dashboard
+  namespace: ai-platform
+  labels:
+    # Must match your Prometheus Operator's serviceMonitorSelector
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: llm-monitoring-dashboard
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
